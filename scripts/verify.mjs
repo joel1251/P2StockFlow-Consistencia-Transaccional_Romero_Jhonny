@@ -1,0 +1,37 @@
+import assert from 'node:assert/strict';
+import {writeFile} from 'node:fs/promises';
+const url=process.env.APP_URL||'http://127.0.0.1:4300/api/';
+const results=[];
+async function call(path,method='GET',payload){const r=await fetch(url+path,{method,headers:{'Content-Type':'application/json'},...(payload===undefined?{}:{body:JSON.stringify(payload)})});return {status:r.status,body:await r.json()};}
+const state=async()=>{const r=await call('state');assert.equal(r.status,200);return r.body};
+const move=(input)=>call('move','POST',input);
+const stock=(s,p,w)=>s.inventory.find(i=>i.product_id===p&&i.warehouse_id===w).quantity_in_stock;
+const record=(name,details)=>{results.push({name,details});console.log(name,JSON.stringify(details));};
+const sleep=ms=>new Promise(r=>setTimeout(r,ms));
+const sku='TEST-'+Date.now();let s=await state();
+const created=await call('products','POST',{name:'Producto de prueba',sku});assert.equal(created.status,201);
+const p=created.body.product_id;
+const edited=await call('products/'+p,'PUT',{name:'Producto editado',sku});assert.equal(edited.status,200);assert.equal(edited.body.product_name,'Producto editado');
+const deleted=await call('products/'+p,'DELETE');assert.equal(deleted.status,200);assert.equal(deleted.body.is_active,false);
+record('CRUD',{created:created.body,edited:edited.body,deleted:deleted.body});
+const src=stock(s,1,1)>0?1:stock(s,1,2)>0?2:3; const dst=src===1?2:1;
+const base={product:1,source:src,destination:dst,quantity:1,actor:'Jhonny Romero',fail:false};
+const before=await state(), committed=await move(base);assert.equal(committed.status,200);assert.equal(committed.body.transaction,'COMMIT');
+const after=await state();assert.equal(stock(after,1,src),stock(before,1,src)-1);assert.equal(stock(after,1,dst),stock(before,1,dst)+1);assert.equal(after.orders.length,before.orders.length+1);
+record('COMMIT y consistencia',{before:[stock(before,1,src),stock(before,1,dst)],after:[stock(after,1,src),stock(after,1,dst)],response:committed});
+const undo={...base,source:dst,destination:src,fail:true};
+const rollback=await move(undo);assert.equal(rollback.status,409);assert.equal(rollback.body.transaction,'ROLLBACK');
+const afterRollback=await state();assert.deepEqual(afterRollback.inventory,after.inventory);assert.deepEqual(afterRollback.orders,after.orders);record('Atomicidad',{response:rollback,ordersBefore:after.orders.length,ordersAfter:afterRollback.orders.length,inventoryUnchanged:true});
+const invalid=await move({...base,quantity:2147483647});assert.equal(invalid.status,409);
+const zero=await move({...base,quantity:0});assert.equal(zero.status,400);
+const invalidAfter=await state();assert.deepEqual(invalidAfter.inventory,after.inventory);record('Reglas de consistencia',{invalid,zero});
+const m=await state();const monitorSource=m.inventory.find(x=>x.product_id===2&&x.quantity_in_stock===1).warehouse_id;const monitorDest=monitorSource===1?2:1;
+const pair=await Promise.all(['Cliente A','Cliente B'].map(actor=>move({product:2,source:monitorSource,destination:monitorDest,quantity:1,actor,fail:false})));
+assert.deepEqual(pair.map(x=>x.status).sort(),[200,409]);const concurrent=await state();assert.equal(stock(concurrent,2,monitorSource),0);assert.equal(stock(concurrent,2,monitorDest),1);record('Aislamiento',{pair,sourceStock:0,destinationStock:1});
+const proxy=await move({...base,actor:''});assert.equal(proxy.status,400);record('Proxy',{response:proxy,events:(await state()).events.filter(e=>e.type==='PROXY').slice(-3)});
+const observed=(await state()).events.filter(e=>['AUDITORÍA','NOTIFICACIÓN'].includes(e.type));assert.ok(observed.some(e=>e.type==='AUDITORÍA'&&e.value.orderId===committed.body.orderId));assert.ok(observed.some(e=>e.type==='NOTIFICACIÓN'&&e.value.orderId===committed.body.orderId));record('Observer y Adapter',{events:observed,authorization:committed.body.authorization});
+assert.equal((await call('fail','POST')).status,200);const failures=[];for(let i=0;i<3;i++)failures.push(await move({...undo,fail:false}));assert.ok(failures.every(x=>x.status===503));assert.equal((await state()).circuit,'OPEN');
+const countBefore=(await call('external')).body.calls;const blocked=await move({...undo,fail:false});assert.equal(blocked.status,503);assert.equal((await call('external')).body.calls,countBefore);record('Circuit Breaker OPEN',{failures,blocked,callsBefore:countBefore,callsAfter:countBefore});
+await call('recover','POST');await sleep(5200);const recovered=await move({...undo,fail:false});assert.equal(recovered.status,200);const final=await state();assert.equal(final.circuit,'CLOSED');const states=final.events.filter(e=>e.type==='CIRCUIT').map(e=>e.value);assert.deepEqual(states.slice(-3),['OPEN','HALF-OPEN','CLOSED']);record('Recuperación',{recovered,states});
+await writeFile(new URL('../../resultados/pruebas.json',import.meta.url),JSON.stringify({date:new Date().toISOString(),confirmedOrder:committed.body.orderId,results,snapshot:final},null,2));
+

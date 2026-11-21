@@ -1,0 +1,40 @@
+services:
+  db:
+    image: postgres:18
+    environment:
+      POSTGRES_DB: stockflow
+      POSTGRES_USER: stockflow
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:?Defina POSTGRES_PASSWORD en .env}
+    volumes:
+      - dbdata:/var/lib/postgresql
+      - ./database/01_stockflow_adaptado.sql:/docker-entrypoint-initdb.d/01_stockflow.sql:ro
+    healthcheck:
+      test: ["CMD-SHELL","pg_isready -U stockflow -d stockflow"]
+      interval: 2s
+      timeout: 3s
+      retries: 30
+  external:
+    build: .
+    command: ["node","src/external.mjs"]
+    environment:
+      BIND_HOST: 0.0.0.0
+  app:
+    build: .
+    environment:
+      BIND_HOST: 0.0.0.0
+      PGHOST: db
+      PGPORT: 5432
+      PGUSER: stockflow
+      PGDATABASE: stockflow
+      PGPASSWORD: ${POSTGRES_PASSWORD:?Defina POSTGRES_PASSWORD en .env}
+      EXTERNAL_URL: http://external:4301
+    ports:
+      - "127.0.0.1:4300:4300"
+    depends_on:
+      db:
+        condition: service_healthy
+      external:
+        condition: service_started
+volumes:
+  dbdata:
+

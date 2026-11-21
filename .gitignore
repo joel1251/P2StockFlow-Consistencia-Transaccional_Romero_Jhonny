@@ -1,0 +1,11 @@
+node_modules/
+.env
+*.log
+pgdata*/
+database/*.backup
+*.zip
+*.pdf
+.env.*
+resultados/
+informe/
+

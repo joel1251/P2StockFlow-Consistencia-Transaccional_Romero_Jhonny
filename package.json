@@ -1,0 +1,1 @@
+{"name":"stockflow-taller","version":"1.0.0","private":true,"type":"module","scripts":{"start":"node src/server.mjs","external":"node src/external.mjs","test":"node --test"}}
